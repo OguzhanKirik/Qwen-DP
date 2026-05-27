@@ -1,0 +1,77 @@
+# Python cache/build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+build/
+dist/
+*.egg-info/
+
+# Local environments
+.env
+.venv/
+venv/
+env/
+.conda/
+
+# Local cloned dependencies
+lerobot/
+
+# Large datasets and generated data
+datasets/
+
+# Model weights and downloaded checkpoints
+models/**
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.gguf
+
+# Training outputs/checkpoints
+outputs/
+checkpoints/
+runs/
+wandb/
+tensorboard/
+lightning_logs/
+
+# Assignment scratch/reference notes
+Assignment.md
+TaskSteps.md
+
+# Slurm/runtime logs
+slurm_training/logs/
+logs/
+*.out
+*.err
+*.log
+
+# Media artifacts generated during rollouts/evaluation
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+*.gif
+
+# Data blobs
+*.parquet
+*.arrow
+*.npy
+*.npz
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
