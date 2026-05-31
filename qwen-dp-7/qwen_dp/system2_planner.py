@@ -14,7 +14,7 @@ from transformers import AutoModelForVision2Seq, AutoProcessor
 
 @dataclass(frozen=True)
 class System2PlannerConfig:
-    model_path: str = "models/Qwen2-VL-2B"
+    model_path: str = "models/Qwen2-VL-7B"
     subgoal_token: str = "<SUBGOAL>"
     torch_dtype: str = "bfloat16"
     device_map: str | dict[str, int | str] | None = "auto"

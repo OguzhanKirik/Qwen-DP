@@ -2,21 +2,27 @@
 
 This folder contains three separate scripts for the Phase 4 curriculum. Run them in order unless you already have checkpoints from earlier stages.
 
-## Stage 1: System 1 Baseline
+## Stage 1: System 1 with Task-ID Conditioning
 
 Script: `train_stage1.py`
 
-Goal: train the standalone low-level Diffusion Policy baseline, also called **A0**.
+Goal: train the standalone low-level Diffusion Policy with a learned task-ID embedding that primes the FiLM conditioning pathway for Stage 3.
 
-This stage trains `System1Actor` on expert action trajectories while the System-2 subgoal conditioning vector is fixed to zeros. The result is a reusable motor-control baseline for later ablations.
+This stage trains `System1Actor` on expert action trajectories. Instead of a zero conditioning vector, a small `nn.Embedding(10, 512)` lookup table is trained alongside the policy. The `task_index` field (0–9) is read directly from each batch — it is a pre-existing label in the LeRobot dataset, one integer per frame identifying which of the 10 LIBERO-10 tasks it belongs to. The corresponding 512-d embedding vector is injected into the `qwen_dp.policy_condition` FiLM slot.
 
-Default output folder: `outputs/stage1/`
+By the end of Stage 1 the FiLM blocks have learned to actively use that 512-d slot. At Stage 3 the embedding table is discarded and the Qwen auxiliary-heads projector writes into the same slot — the FiLM blocks adapt much more readily than if they had been trained on zeros.
 
-Final policy checkpoint: `outputs/stage1/final/`
+Default output folder: `outputs/stage1_v3/`
+
+Final policy checkpoint: `outputs/stage1_v3/stage1/final/`
+
+This checkpoint is Qwen-agnostic and is shared by both the qwen (2B) and qwen7 (7B) Stage 3 runs.
 
 ```bash
 python qwen-dp/scripts/train_stage1.py
 ```
+
+Pass `--no-task-embed` to disable the embedding and use zero conditioning instead (original behaviour).
 
 ## Stage 2: System 2 Alignment
 
@@ -33,6 +39,20 @@ Final System-2 bundle: `outputs/stage2/final/system2_aux.pt`
 ```bash
 python qwen-dp/scripts/train_stage2.py
 ```
+
+Optional Qwen LoRA adapters can be enabled for attention projections while keeping
+the base backbone frozen:
+
+```bash
+python qwen-dp/scripts/train_stage2.py \
+  --system2-lora-r 8 \
+  --system2-lora-alpha 16 \
+  --system2-lora-target-modules q_proj v_proj \
+  --output-dir outputs/qwen2b_lora_r8
+```
+
+Use the same `--system2-lora-*` options when loading that Stage 2 checkpoint in
+Stage 3.
 
 ## Stage 3: Joint Fine-Tuning
 

@@ -13,7 +13,6 @@ Pass --no-task-embed to fall back to the original zero-conditioning baseline.
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 
 import torch
 import torch.nn as nn
@@ -45,10 +44,6 @@ def parse_args() -> argparse.Namespace:
                         help="Number of distinct tasks; sets the task embedding table size.")
     parser.add_argument("--no-task-embed", action="store_true",
                         help="Disable task-ID embedding and use zero conditioning instead.")
-    parser.add_argument("--resume-from", type=str, default=None,
-                        help="Warm-start from a Stage 1 policy checkpoint directory.")
-    parser.add_argument("--resume-step", type=int, default=0,
-                        help="Global step to continue from when using --resume-from.")
     parser.set_defaults(
         warmup_steps=6000,
         save_every=5000,
@@ -70,37 +65,22 @@ def main() -> None:
     dataloader = make_dataloader(args, dataset)
     device = torch.device(args.device)
 
-    if args.resume_from is not None:
-        policy = System1Actor.from_pretrained(
-            args.resume_from,
-            config=make_policy_config(args, dataset),
-        ).to(device)
-    else:
-        policy = System1Actor(make_policy_config(args, dataset)).to(device)
+    policy = System1Actor(make_policy_config(args, dataset)).to(device)
 
     use_task_embed = not args.no_task_embed
     task_embed: nn.Embedding | None = None
     all_params = list(policy.parameters())
     if use_task_embed:
         task_embed = nn.Embedding(args.num_tasks, args.policy_condition_dim).to(device)
-        if args.resume_from is not None:
-            task_embed_path = Path(args.resume_from) / "task_embed.pt"
-            if task_embed_path.exists():
-                task_embed.load_state_dict(torch.load(task_embed_path, map_location=device))
-            else:
-                raise FileNotFoundError(f"Missing task embedding checkpoint: {task_embed_path}")
         all_params = all_params + list(task_embed.parameters())
 
     optimizer = torch.optim.AdamW(all_params, lr=args.lr_policy)
     scheduler = make_lr_scheduler(optimizer, args, args.steps)
-    start_step = int(args.resume_step)
-    if scheduler is not None and start_step > 0:
-        scheduler.step(start_step)
     policy.train()
     if task_embed is not None:
         task_embed.train()
 
-    for step, batch in enumerate(cycle(dataloader), start=start_step + 1):
+    for step, batch in enumerate(cycle(dataloader), start=1):
         batch = move_batch(batch, device)
 
         if use_task_embed:

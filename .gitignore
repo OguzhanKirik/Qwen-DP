@@ -18,13 +18,16 @@ env/
 .conda/
 
 # Local cloned dependencies
-lerobot/
+lerobot/*
+!lerobot/README_QWEN_DP.md
 
 # Large datasets and generated data
-datasets/
+datasets/*
+!datasets/README.md
 
 # Model weights and downloaded checkpoints
-models/**
+models/*
+!models/README.md
 *.safetensors
 *.bin
 *.pt
@@ -51,6 +54,12 @@ logs/
 *.out
 *.err
 *.log
+
+# Slurm evaluation outputs
+slurm_eval/**/logs/
+slurm_eval/logs/
+slurm_eval/results*/
+slurm_eval/**/results*/
 
 # Media artifacts generated during rollouts/evaluation
 *.mp4

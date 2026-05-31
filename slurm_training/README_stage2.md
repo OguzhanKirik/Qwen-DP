@@ -1,214 +1,179 @@
 # Stage 2 Training Notes
 
-Stage 2 trains System-2 alignment. It does not train the diffusion policy.
+Stage 2 trains System-2 alignment. It does not touch the diffusion policy.
 
 ## What Trains
 
-- Frozen: Qwen2-VL base model.
-- Trainable: only the `<SUBGOAL>` token embedding row inside Qwen.
-- Trainable: the MLP projector from Qwen hidden state to policy condition.
-- Trainable: auxiliary waypoint, gripper, and stage heads.
-- Not trained: System 1 diffusion policy.
+- **Frozen**: Qwen2-VL base model weights.
+- **Trainable**: LoRA adapters on `q_proj` and `v_proj` across all Qwen attention layers.
+- **Trainable**: the `<SUBGOAL>` token embedding row inside Qwen.
+- **Trainable**: MLP projector from Qwen hidden state → 512-d `policy_condition`.
+- **Trainable**: auxiliary waypoint, gripper, and stage heads.
+- **Not trained**: System 1 diffusion policy.
 
-The goal is to make the Qwen `<SUBGOAL>` hidden state encode useful physical subgoal information before joint training.
+## Why LoRA
+
+Without LoRA, the only trainable part of Qwen is a single token embedding row. The frozen
+attention layers cannot re-route visual features toward the `<SUBGOAL>` position, so the
+subgoal representation is severely limited regardless of how long you train.
+
+LoRA adds low-rank adapters (r=8) to the query and value projections in every attention layer.
+This gives the model capacity to learn which visual and language features are relevant to
+predicting physical subgoals, without updating the full 2B/7B backbone.
+
+Observed effect: typical non-spike loss drops from 0.5–2.0 (no LoRA) to 0.005–0.05 (LoRA r=8).
 
 ## Architecture Flow
 
-```text
+```
 image + task text + <SUBGOAL>
         |
-   frozen Qwen2-VL backbone
+   Qwen2-VL backbone
+   (frozen weights + trainable LoRA on q_proj, v_proj)
         |
- z_subgoal hidden state
+ z_subgoal  ← final hidden state at <SUBGOAL> token position
         |
-   MLP projector
+   MLP projector  (trainable)
         |
- policy_condition, 512D
+ policy_condition  512-d
         |
- waypoint head + gripper head + stage head
+ waypoint head + gripper head + stage head  (trainable)
         |
- auxiliary System-2 loss
+ auxiliary loss
 ```
 
-The MLP projector is the bridge we eventually want System 1 to consume. The auxiliary heads intentionally predict from `policy_condition`, not directly from raw `z_subgoal`, so gradients train the whole Stage 2 path:
-
-```text
-auxiliary losses -> aux heads -> MLP projector -> <SUBGOAL> token
-```
-
-This matters because if the heads read directly from `z_subgoal`, the projector can exist in the code but receive no useful Stage 2 gradient.
+The heads predict from `policy_condition`, not directly from `z_subgoal`. This forces
+gradients to flow through the full path: aux heads → projector → `<SUBGOAL>` token → LoRA.
 
 ## One Training Step
 
-Stage 2 uses two different meanings of subgoal:
-
-```text
-<SUBGOAL> token  = learnable special token inserted into the Qwen prompt
-target subgoals = labels created by preprocessing the LIBERO dataset
 ```
-
-For one batch, the sequence is:
-
-```text
 1. Load from dataset:
-   - camera image
-   - task language
-   - target_waypoint
-   - target_gripper_state
-   - target_stage_class
+   - camera image (agentview)
+   - task language string
+   - target_waypoint   (7-DOF end-effector pose)
+   - target_gripper_state  (binary: open / closed)
+   - target_stage_class    (3-class: approach / manipulation / retraction)
 
 2. Build Qwen input:
    "Robot task: {task}. Predict the next physical subgoal. <SUBGOAL>"
-   plus the camera image
+   + camera image
 
-3. Run frozen Qwen2-VL:
-   image + task + <SUBGOAL> -> z_subgoal
+3. Forward Qwen2-VL (frozen weights + LoRA):
+   → z_subgoal  [B, hidden_size]
 
-4. Learn the Stage 2 representation:
-   z_subgoal -> MLP projector -> policy_condition, 512D
+4. MLP projector:
+   z_subgoal → policy_condition  [B, 512]
 
-5. Predict auxiliary labels from policy_condition:
-   policy_condition -> waypoint head -> predicted waypoint
-   policy_condition -> gripper head  -> predicted gripper state
-   policy_condition -> stage head    -> predicted task stage
+5. Auxiliary heads:
+   policy_condition → predicted waypoint      (MSE vs target_waypoint)
+   policy_condition → predicted gripper logit (BCE vs target_gripper_state)
+   policy_condition → predicted stage logits  (CE  vs target_stage_class)
 
-6. Compute loss against preprocessed labels:
-   predicted waypoint vs target_waypoint
-   predicted gripper  vs target_gripper_state
-   predicted stage    vs target_stage_class
-
-7. Backprop updates only:
-   - <SUBGOAL> token embedding
-   - MLP projector
-   - auxiliary heads
+6. Backprop updates: LoRA adapters, <SUBGOAL> embedding, projector, heads.
 ```
 
-The auxiliary heads do not directly control the robot. They are supervision tools that force `policy_condition` to contain useful physical information. Later, System 1 consumes this vector:
+## Loss Weights and Why They Changed
 
-```text
-image + robot state + policy_condition -> diffusion policy -> robot actions
+The total loss is:
+
+```
+loss = waypoint_weight * waypoint_loss
+     + gripper_weight  * gripper_loss
+     + stage_weight    * stage_loss
 ```
 
-## Relation To Stage 1
+**Original weights (1.0 / 1.0 / 1.0) caused catastrophic oscillation.**
 
-The assignment text says to freeze the baseline Diffusion Policy from Stage 1 during Stage 2. In the current implementation, Stage 2 does not instantiate or load the Stage 1 policy at all. Functionally, this is acceptable for latent pre-alignment because the Stage 2 loss only trains System 2 and the auxiliary heads.
+With `batch_size=2`, a batch can contain two samples with the same gripper state or the same
+stage class. Binary cross-entropy and cross-entropy have no upper bound when the model is
+confident-but-wrong on a skewed batch. This caused gripper and stage losses to spike to 4–6
+every few steps, randomly yanking the projector in wrong directions.
 
-The important interface match is:
-
-```text
-MLP projector output dim = policy_condition_dim = System 1 qwen_condition_dim
+Actual log evidence from the non-LoRA 100k run:
+```
+step=98825  gripper=4.648  (fine two steps later at 0.012)
+step=99200  gripper=3.536
+step=99475  stage=3.557
 ```
 
-By default this is `512`. Later joint training should load both:
+Two fixes applied together:
+1. `batch_size 2 → 8`: each batch now contains ~2–3 samples per class, making the gradient
+   estimate far more stable.
+2. `gripper_weight 1.0 → 0.3`, `stage_weight 1.0 → 0.3`: caps the maximum damage from a
+   pathological batch, keeping classification contribution on the same scale as waypoint MSE.
 
-```text
-outputs/stage1/final
-outputs/stage2/final/system2_aux.pt
-```
+**waypoint_weight stays at 1.0** — waypoint MSE converges fast and is the physically
+meaningful signal. It was at ~0.01 by step 100 in both runs.
 
-and connect the projected `policy_condition` into the diffusion policy.
-
-
-## Run
+## Run (v2 — current)
 
 ```bash
-sbatch slurm_training/train_stage2.slurm
+sbatch slurm_training/qwenlora/train_stage2_qwen_lora.slurm    # Qwen2-VL-2B
+sbatch slurm_training/qwen7lora/train_stage2_qwen7_lora.slurm  # Qwen2-VL-7B
 ```
 
-Current Slurm overrides:
+Current hyperparameters (v2):
 
-```bash
---batch-size 4
---steps 30000
---save-every 2000
---log-every 25
---lr-system2 5e-6
+| Parameter | Value | Reason |
+|---|---|---|
+| `batch_size` | 8 | stable gradient for classification losses |
+| `lora_r` | 8 | gives attention layers capacity to route visual features |
+| `lora_alpha` | 16 | standard 2× scaling |
+| `lora_target_modules` | q_proj v_proj | attention input and value projections |
+| `steps` | 200,000 | previous 100k run never fully converged |
+| `warmup_steps` | 2,000 | 1% of total steps |
+| `grad_clip` | 0.5 | tighter clip to further limit spike damage |
+| `gripper_weight` | 0.3 | reduces classification spike impact |
+| `stage_weight` | 0.3 | reduces classification spike impact |
+| `lr_system2` | 5e-6 | conservative LR for LoRA + subgoal token |
+| `lr_heads` | 1e-4 | faster LR for fresh MLP heads |
+
+Output directories:
+
+```
+outputs_qwenlora_v2/stage2/final/system2_aux.pt   ← 2B
+outputs_qwen7lora_v2/stage2/final/system2_aux.pt  ← 7B
 ```
 
-Everything else uses the Python defaults.
+## Loss — How To Judge Progress
 
-## Loss
-
-The log line looks like:
-
-```text
+Log line format:
+```
 [stage2/System2] step=... loss=... waypoint=... gripper=... stage=...
 ```
 
-The exact objective is:
+Expected behaviour with v2 config:
 
-```text
-loss =
-  waypoint_weight * waypoint_loss
-+ gripper_weight  * gripper_loss
-+ stage_weight    * stage_loss
-```
-
-With default weights, all three are `1.0`.
-
-Components:
-
-- `waypoint_loss`: MSE between the predicted future end-effector waypoint and `target_waypoint`.
-- `gripper_loss`: binary cross entropy for open/closed gripper state.
-- `stage_loss`: cross entropy for approach/manipulation/retraction stage.
-
-## How To Judge Progress
-
-- `loss` should trend down over hundreds or thousands of steps.
-- `waypoint_loss` is the most important physical signal. It should clearly decrease over time.
-- `gripper_loss` starts around `0.69` for random binary prediction. Below `0.69` means learning.
-- `stage_loss` starts around `1.10` for random 3-class prediction. Below `1.10` means learning.
-- Do not overreact to one noisy print line; compare windows of logs.
-
-Good early signs:
-
-```text
-gripper < 0.69
-stage < 1.10
-waypoint steadily decreasing
-```
+| Head | Starting value | Healthy end value |
+|---|---|---|
+| `waypoint_loss` | ~1.3 | <0.02 (converges fast, within first 1k steps) |
+| `gripper_loss` | ~0.69 | <0.05 (below random-binary baseline) |
+| `stage_loss` | ~1.10 | <0.10 (below random-3class baseline) |
+| `loss` (total) | ~3.0 | <0.10 typical, occasional spikes <1.0 |
 
 Warning signs:
+- `waypoint` flat after 5k steps: LoRA or subgoal token not receiving gradient.
+- `gripper` stuck near 0.69: class balance issue or LR too low for heads.
+- `stage` stuck near 1.10: same.
+- Spikes >3.0 persisting every few steps: batch_size still too small or grad_clip too high.
+- `nan`: lower `--lr-system2` to `1e-6` or `--lr-heads` to `5e-5`.
 
-- `waypoint` flat: subgoal embedding is not learning spatial information.
-- `gripper` flat near `0.69`: gripper labels may be noisy or the LR is too low for heads.
-- `stage` flat near `1.10`: stage labels may be weak or class balance may be poor.
-- `nan`: learning rate too high, bad batch values, or unstable mixed precision.
+## Relation to Stage 1 and Stage 3
 
-## Hyperparameter Tuning
+Stage 2 is independent of Stage 1 — it can run in parallel. The only interface
+constraint is:
 
-Recommended default for one H100:
-
-```bash
-BATCH_SIZE=4
-STEPS=30000
-LR_SYSTEM2=5e-6
+```
+MLP projector output dim (512) == System1Actor qwen_condition_dim (512)
 ```
 
-Useful overrides:
-
-```bash
-BATCH_SIZE=2 sbatch slurm_training/train_stage2.slurm
-LR_SYSTEM2=1e-6 sbatch slurm_training/train_stage2.slurm
-STEPS=10000 sbatch slurm_training/train_stage2.slurm
+Stage 3 loads both:
+```
+outputs/stage1_v3/stage1/final          ← System 1 diffusion policy
+outputs_qwenlora_v2/stage2/final/       ← System 2 bundle (2B variant)
+outputs_qwen7lora_v2/stage2/final/      ← System 2 bundle (7B variant)
 ```
 
-Tuning rules:
-
-- Out of memory: lower `BATCH_SIZE` to `2`.
-- NaNs or unstable loss: lower `LR_SYSTEM2` to `1e-6`.
-- Loss is stable but too slow: try `LR_SYSTEM2=1e-5`.
-- Need a quick smoke test: set `STEPS=1000`.
-- Need more checkpoints: lower `SAVE_EVERY`.
-
-If classification losses improve but waypoint does not, consider changing the Python loss weights later, for example lowering `WAYPOINT_WEIGHT` only if waypoint numerically dominates the total loss. Keep the Slurm script simple unless we intentionally change those defaults.
-
-## What To Save
-
-Final output goes to:
-
-```text
-outputs/stage2/final/system2_aux.pt
-```
-
-This bundle contains the learned `<SUBGOAL>` embedding and auxiliary heads. Later joint training should combine this with the Stage 1 System 1 checkpoint.
+The `system2_aux.pt` bundle contains: LoRA state dict, `<SUBGOAL>` token embedding,
+projector weights, and auxiliary head weights.

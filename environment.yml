@@ -1,0 +1,21 @@
+name: ur5
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - pytorch
+  - torchvision
+  - pytorch-cuda=12.1
+  - ffmpeg
+  - git
+  - git-lfs
+  - numpy
+  - pandas
+  - pyarrow
+  - pillow
+  - pip:
+      - -r requirements.txt

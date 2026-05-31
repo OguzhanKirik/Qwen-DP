@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Stage 3 / A4: jointly fine-tune System 1 and the trainable System-2 bridge."""
+"""Stage 3 / A3: jointly train System 1 and System 2 with auxiliary losses disabled."""
 
 from __future__ import annotations
 
@@ -46,10 +46,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--steps", type=int, default=100000)
     parser.add_argument("--lr-policy", type=float, default=1e-4)
     parser.add_argument("--joint-policy-weight", type=float, default=1.0)
-    parser.add_argument("--joint-aux-weight", type=float, default=1.0)
-    parser.add_argument("--stage1-checkpoint", type=str)
-    parser.add_argument("--stage2-checkpoint", type=str)
-    parser.add_argument("--stage-name", type=str, default="stage3")
+    parser.add_argument("--stage1-checkpoint", type=str, default="outputs/stage1/final")
+    parser.add_argument("--stage2-checkpoint", type=str, default="outputs_qwen7/stage2/final")
+    parser.add_argument("--stage-name", type=str, default="stage3_no_aux")
     return parser.parse_args()
 
 
@@ -59,25 +58,28 @@ def main() -> None:
 
     stage_dir = args.output_dir / args.stage_name
     stage_dir.mkdir(parents=True, exist_ok=True)
-    write_json(stage_dir / "config.json", jsonable_args(args))
+    config = jsonable_args(args)
+    config["joint_aux_weight"] = 0.0
+    write_json(stage_dir / "config.json", config)
 
     dataset = make_dataset(args)
     dataloader = make_dataloader(args, dataset)
     device = torch.device(args.device)
 
-    stage1_checkpoint = Path(args.stage1_checkpoint) if args.stage1_checkpoint else args.output_dir / "stage1" / "final"
-    stage2_checkpoint = Path(args.stage2_checkpoint) if args.stage2_checkpoint else args.output_dir / "stage2" / "final"
-
-    policy = System1Actor.from_pretrained(stage1_checkpoint, config=make_policy_config(args, dataset)).to(device)
+    policy = System1Actor.from_pretrained(
+        Path(args.stage1_checkpoint),
+        config=make_policy_config(args, dataset),
+    ).to(device)
     planner = make_system2(args).to(device)
     heads = make_aux_heads(args, planner).to(device)
-    load_system2_bundle(planner, heads, stage2_checkpoint)
+    load_system2_bundle(planner, heads, Path(args.stage2_checkpoint))
+
     weights = StageLossWeights(
         waypoint=args.waypoint_weight,
         gripper=args.gripper_weight,
         stage=args.stage_weight,
         policy=args.joint_policy_weight,
-        aux=args.joint_aux_weight,
+        aux=0.0,
     )
     optimizer = torch.optim.AdamW(
         [
@@ -91,7 +93,6 @@ def main() -> None:
     planner.train()
     heads.train()
 
-    # Pre-fetch task descriptions to avoid repeated table lookups.
     episodes_tasks = episode_task_descriptions(dataset)
 
     for step, batch in enumerate(cycle(dataloader), start=1):
@@ -104,14 +105,15 @@ def main() -> None:
         z_subgoal = planner(**inputs).to(device=device, dtype=module_dtype(heads))
         outputs = heads(z_subgoal)
         policy_loss, _ = policy(prepare_policy_batch(batch, outputs.policy_condition))
-        aux_losses = heads.losses(
-            outputs,
-            aux_targets(condition_batch),
-            waypoint_weight=weights.waypoint,
-            gripper_weight=weights.gripper,
-            stage_weight=weights.stage,
-        )
-        loss = weights.policy * policy_loss + weights.aux * aux_losses["loss"]
+        with torch.no_grad():
+            aux_losses = heads.losses(
+                outputs,
+                aux_targets(condition_batch),
+                waypoint_weight=weights.waypoint,
+                gripper_weight=weights.gripper,
+                stage_weight=weights.stage,
+            )
+        loss = weights.policy * policy_loss
 
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -122,9 +124,9 @@ def main() -> None:
 
         if step % args.log_every == 0:
             print(
-                "[stage3/A4] "
+                "[stage3/A3-no-aux] "
                 f"step={step} loss={loss.item():.6f} "
-                f"policy={policy_loss.item():.6f} aux={aux_losses['loss'].item():.6f} "
+                f"policy={policy_loss.item():.6f} aux_monitor={aux_losses['loss'].item():.6f} "
                 f"async_K={args.async_condition_interval} stale_mean={stale_offsets.float().mean().item():.2f}",
                 flush=True,
             )
@@ -142,7 +144,8 @@ def main() -> None:
         {
             "joint_loss": float(loss.detach().cpu()),
             "policy_loss": float(policy_loss.detach().cpu()),
-            "aux_loss": float(aux_losses["loss"].detach().cpu()),
+            "aux_monitor_loss": float(aux_losses["loss"].detach().cpu()),
+            "joint_aux_weight": 0.0,
             "async_condition_interval": int(args.async_condition_interval),
         },
     )

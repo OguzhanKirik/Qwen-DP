@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader, default_collate
 
 
 ROOT = Path(__file__).resolve().parents[2]
-QWEN_DP_ROOT = ROOT / "qwen-dp"
+QWEN_DP_ROOT = ROOT / "qwen-dp-7"
 LEROBOT_SRC = ROOT / "lerobot" / "src"
 sys.path.insert(0, str(QWEN_DP_ROOT))
 sys.path.insert(0, str(LEROBOT_SRC))
@@ -57,7 +57,7 @@ class StageLossWeights:
 def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--dataset-root", type=Path, default=ROOT / "datasets" / "lerobot_libero_10_subgoals")
     parser.add_argument("--repo-id", default="lerobot/libero_10")
-    parser.add_argument("--output-dir", type=Path, default=ROOT / "outputs")
+    parser.add_argument("--output-dir", type=Path, default=ROOT / "outputs_qwen7")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--num-workers", type=int, default=4)
@@ -94,7 +94,7 @@ def add_async_condition_args(parser: argparse.ArgumentParser) -> None:
 
 
 def add_system2_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--model-path", type=Path, default=ROOT / "models" / "Qwen2-VL-2B")
+    parser.add_argument("--model-path", type=Path, default=ROOT / "models" / "Qwen2-VL-7B")
     parser.add_argument("--system2-device-map", default="auto")
     parser.add_argument("--system2-dtype", default="bfloat16", choices=("float32", "float16", "bfloat16"))
     parser.add_argument("--system2-lora-r", type=int, default=0, help="LoRA rank for Qwen attention projections. 0 disables LoRA.")

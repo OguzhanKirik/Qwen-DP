@@ -1,0 +1,23 @@
+# Pip packages installed after creating the conda environment.
+# Keep torch/torchvision in environment.yml so CUDA wheels can be selected there.
+accelerate
+datasets
+einops
+huggingface-hub
+imageio
+libero
+matplotlib
+numpy
+opencv-python-headless
+pandas
+peft
+Pillow
+pyarrow
+qwen-vl-utils
+robosuite
+safetensors
+sentencepiece
+tensorboard
+tqdm
+transformers>=4.45.0
+wandb

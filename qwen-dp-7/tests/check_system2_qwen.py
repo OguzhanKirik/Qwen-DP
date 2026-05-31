@@ -18,14 +18,10 @@ from qwen_dp import System2Planner, System2PlannerConfig  # noqa: E402
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model-path", default="models/Qwen2-VL-2B")
+    parser.add_argument("--model-path", default="models/Qwen2-VL-7B")
     parser.add_argument("--subgoal-token", default="<SUBGOAL>")
     parser.add_argument("--torch-dtype", default="bfloat16", choices=("float32", "float16", "bfloat16"))
     parser.add_argument("--device-map", default="auto")
-    parser.add_argument("--lora-r", type=int, default=0)
-    parser.add_argument("--lora-alpha", type=float, default=16.0)
-    parser.add_argument("--lora-dropout", type=float, default=0.05)
-    parser.add_argument("--lora-target-modules", nargs="+", default=["q_proj", "v_proj"])
     return parser.parse_args()
 
 
@@ -38,10 +34,6 @@ def main() -> None:
             subgoal_token=args.subgoal_token,
             torch_dtype=args.torch_dtype,
             device_map=device_map,
-            lora_r=args.lora_r,
-            lora_alpha=args.lora_alpha,
-            lora_dropout=args.lora_dropout,
-            lora_target_modules=tuple(args.lora_target_modules),
         )
     )
 
@@ -56,7 +48,6 @@ def main() -> None:
     print(f"total_params: {total_params:,}")
     print(f"trainable_parameter_tensors: {len(trainable)}")
     print(f"trainable_params_before_gradient_mask: {trainable_params:,}")
-    print(f"lora_parameter_tensors: {len(system2.lora_state_dict())}")
     for name, param in trainable:
         print(f"  trainable tensor: {name} shape={tuple(param.shape)}")
 

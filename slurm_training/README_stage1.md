@@ -1,19 +1,29 @@
 # Stage 1 Training Notes
 
-Stage 1 trains the A0 baseline: System 1 only, with zero System-2 conditioning.
+Stage 1 trains the `System1Actor` diffusion policy with **task-ID conditioning** — a learned embedding per LIBERO-10 task that primes the U-Net FiLM blocks to actively use the conditioning slot before Stage 3 introduces Qwen.
 
 ## What Trains
 
-- Trainable: the full `System1Actor` diffusion policy.
-- Not used: Qwen/System 2.
-- Conditioning: a zero vector is passed as `qwen_dp.policy_condition`.
+- Trainable: the full `System1Actor` diffusion policy + a small `nn.Embedding(10, 512)` table.
+- Not used: Qwen / System 2.
+- Conditioning: a **learned 512-d task embedding** (one vector per task, indexed by `task_index` from the dataset) is passed as `qwen_dp.policy_condition`.
 
-This gives us the motor-control baseline for later ablations.
+Pass `--no-task-embed` to fall back to zero conditioning (the original approach).
+
+## Why Task-ID Embeddings Instead of Zeros
+
+Training with zeros for 600k steps teaches the FiLM residual blocks to **ignore** the conditioning slot entirely. When Stage 3 then tries to inject a meaningful Qwen projection into that slot, the U-Net has to unlearn the suppression behaviour.
+
+The task-ID embedding avoids this. `task_index` is an integer (0–9) already stored per frame in the LeRobot dataset — it is not computed or inferred, just read from `batch["task_index"]`. The `nn.Embedding` table is a 10-row lookup: each row is a 512-d vector that gets optimised alongside the policy. By the end of Stage 1 each vector encodes something about that task's motion pattern.
+
+At Stage 3 the embedding table is discarded. The Qwen auxiliary-heads projector outputs a 512-d vector into the exact same FiLM slot. Because the FiLM blocks spent 600k steps learning to use that slot, they adapt to Qwen's richer signal much more readily.
+
+The `task_embed.pt` file saved alongside the policy checkpoint is not needed by Stage 3 and can be ignored.
 
 ## Run
 
 ```bash
-sbatch slurm_training/train_stage1.slurm
+sbatch slurm_training/qwen/train_stage1.slurm
 ```
 
 Logs are written to:
@@ -23,53 +33,45 @@ slurm_training/logs/stage1_<jobid>.out
 slurm_training/logs/stage1_<jobid>.err
 ```
 
+Stage 1 is Qwen-agnostic. The checkpoint at `outputs/stage1_v3/stage1/final` is shared by both the qwen (2B) and qwen7 (7B) Stage 3 experiments.
+
 ## Loss
 
 The log line looks like:
 
 ```text
-[stage1/A0] step=... policy_loss=...
+[stage1] step=... policy_loss=... cond=task_embed
 ```
 
-`policy_loss` is the diffusion policy training loss from LeRobot. In practical terms, the policy adds noise to expert action chunks and learns to predict the denoising target. Lower loss means the policy is better matching the expert action distribution under the current visual/state observations.
-
-Read it as a training signal, not as direct task success. A lower diffusion loss usually helps, but the real test is rollout success rate and step count.
+`policy_loss` is the diffusion denoising loss. Lower is better, but the real test is rollout success rate. Expect it to decrease steadily for the first ~100k steps then slow.
 
 ## Healthy Progress
 
-- The loss should trend downward over hundreds or thousands of steps.
+- Loss should trend downward over hundreds or thousands of steps.
 - Short-term noise is normal; do not judge from one printed line.
-- If the loss is flat from the beginning, check data loading and whether observations/actions have sane values.
-- If the loss becomes `nan`, lower the learning rate or gradient clip.
-- If the job is slow but stable, prioritize finishing a checkpoint over chasing perfect loss.
+- If loss is flat from step 1, check data loading and that `task_index` values are in range 0–9.
+- If loss becomes `nan`, lower `--lr-policy` or `--grad-clip`.
 
-## Hyperparameter Tuning
+## Current Hyperparameters (v3)
 
-The Python defaults are intentionally used by `train_stage1.slurm`.
+| Parameter | Value | Reason |
+|---|---|---|
+| `batch_size` | 96 | ~10 examples per task per step on H100 |
+| `crop_size` | 128 | enough scene context; 84 discarded too much |
+| `lr_policy` | 5e-5 | scaled with batch size (sqrt rule from 3e-5 @ 32) |
+| `warmup_steps` | 6000 | 1% of total steps |
+| `steps` | 600000 | ~57 epochs; 18× more gradient signal than original 100k run |
+| `num_tasks` | 10 | matches LIBERO-10 |
 
-Important knobs if you override them manually:
-
-```bash
-STEPS=...
-BATCH_SIZE=...
-LR_POLICY=...
-SAVE_EVERY=...
-LOG_EVERY=...
-```
-
-Recommended first changes:
-
-- More stable training: lower `LR_POLICY` from `1e-4` to `5e-5`.
-- Out of memory: lower `BATCH_SIZE`.
-- Too slow to verify: lower `STEPS` for a smoke test.
-- Need more frequent checkpoints: lower `SAVE_EVERY`.
+Override any default by passing it explicitly to the slurm script or Python command.
 
 ## What To Save
 
 Final output goes to:
 
 ```text
-outputs/stage1/final
+outputs/stage1_v3/stage1/final/          ← policy weights (System1Actor)
+outputs/stage1_v3/stage1/final/task_embed.pt  ← embedding table (not needed by Stage 3)
 ```
 
-Use this as the A0 baseline checkpoint and as the System 1 initialization for later joint training.
+Use `outputs/stage1_v3/stage1/final` as the Stage 3 `--stage1-checkpoint`.

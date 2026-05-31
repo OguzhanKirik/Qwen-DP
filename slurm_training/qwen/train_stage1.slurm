@@ -4,12 +4,12 @@
 #SBATCH --gpus=1
 #SBATCH -C GPU_SKU:H100&ARCH:X86
 #SBATCH --nodes=1
-#SBATCH --mem=64G
-#SBATCH --time=24:00:00
+#SBATCH --mem=128G
+#SBATCH --time=96:00:00
 #SBATCH --job-name=qwen-dp-stage1
 #SBATCH --output=slurm_training/logs/stage1_%j.out
 #SBATCH --error=slurm_training/logs/stage1_%j.err
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=16
 #SBATCH --exclude=gx13v1
 
 set -euo pipefail
@@ -24,5 +24,8 @@ export PYTHONPATH="$PWD/qwen-dp:$PWD/lerobot/src:${PYTHONPATH:-}"
 export TOKENIZERS_PARALLELISM=false
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
-# Run with default hyperparameters defined in Python scripts
-"$PYTHON_BIN" -u qwen-dp/scripts/train_stage1.py --device cuda
+# batch_size=32, crop_size=128, lr=3e-5, steps=600k, task-ID embedding enabled by default
+"$PYTHON_BIN" -u qwen-dp/scripts/train_stage1.py \
+    --device cuda \
+    --output-dir outputs/stage1_v3 \
+    --num-workers 15
