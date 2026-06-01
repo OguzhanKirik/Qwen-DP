@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 import torch
 
@@ -15,6 +16,7 @@ from train_common import (
     cycle,
     iter_parameters,
     jsonable_args,
+    load_system2_bundle,
     make_aux_heads,
     make_dataloader,
     make_dataset,
@@ -34,6 +36,10 @@ def parse_args() -> argparse.Namespace:
     add_common_args(parser)
     add_system2_args(parser)
     parser.add_argument("--steps", type=int, default=100000)
+    parser.add_argument("--resume-from", type=str, default=None,
+                        help="Warm-start from a Stage 2 checkpoint directory.")
+    parser.add_argument("--resume-step", type=int, default=0,
+                        help="Global step to continue from when using --resume-from.")
     return parser.parse_args()
 
 
@@ -51,6 +57,8 @@ def main() -> None:
 
     planner = make_system2(args).to(device)
     heads = make_aux_heads(args, planner).to(device)
+    if args.resume_from is not None:
+        load_system2_bundle(planner, heads, Path(args.resume_from))
     weights = StageLossWeights(
         waypoint=args.waypoint_weight,
         gripper=args.gripper_weight,
@@ -63,6 +71,9 @@ def main() -> None:
         ]
     )
     scheduler = make_lr_scheduler(optimizer, args, args.steps)
+    start_step = int(args.resume_step)
+    if scheduler is not None and start_step > 0:
+        scheduler.step(start_step)
     planner.train()
     heads.train()
 
@@ -74,7 +85,7 @@ def main() -> None:
         task_idx = dataset.hf_dataset[first_frame_idx]['task_index']
         episodes_tasks.append(task_descriptions[task_idx])
 
-    for step, batch in enumerate(cycle(dataloader), start=1):
+    for step, batch in enumerate(cycle(dataloader), start=start_step + 1):
         # Inject task descriptions from metadata into the batch
         ep_indices = batch["episode_index"].tolist()
         batch["task"] = [episodes_tasks[i] for i in ep_indices]

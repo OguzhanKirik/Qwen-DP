@@ -58,6 +58,9 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--dataset-root", type=Path, default=ROOT / "datasets" / "lerobot_libero_10_subgoals")
     parser.add_argument("--repo-id", default="lerobot/libero_10")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "outputs_qwen7")
+    parser.add_argument("--task-id", type=int, default=None,
+                        help="If set, train only on this task_index (0-9 for libero_10). "
+                             "Omit to train on all tasks.")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--num-workers", type=int, default=4)
@@ -132,15 +135,32 @@ def delta_timestamps(n_obs_steps: int, horizon: int, fps: int) -> dict[str, list
     }
 
 
+def _find_task_episode_ids(dataset_root: Path, repo_id: str, task_id: int) -> list[int]:
+    """Scan every episode's first frame to collect episode indices matching task_id."""
+    full = LeRobotDataset(repo_id=repo_id, root=dataset_root, download_videos=False)
+    matching = [
+        ep_idx
+        for ep_idx in range(full.meta.total_episodes)
+        if int(full.hf_dataset[int(full.meta.episodes[ep_idx]["dataset_from_index"])]["task_index"]) == task_id
+    ]
+    if not matching:
+        raise ValueError(f"No episodes found for task_id={task_id} in {dataset_root}")
+    print(f"[dataset] task_id={task_id}: {len(matching)} episodes → {matching}")
+    return matching
+
+
 def make_dataset(args: argparse.Namespace) -> LeRobotDataset:
     with open(args.dataset_root / "meta" / "info.json") as f:
         fps = int(json.load(f)["fps"])
+    task_id = getattr(args, "task_id", None)
+    episodes = _find_task_episode_ids(args.dataset_root, args.repo_id, task_id) if task_id is not None else None
     return LeRobotDataset(
         repo_id=args.repo_id,
         root=args.dataset_root,
         delta_timestamps=delta_timestamps(args.n_obs_steps, args.horizon, fps),
         download_videos=False,
         video_backend=args.video_backend,
+        episodes=episodes,
     )
 
 
@@ -190,11 +210,17 @@ def make_policy_config(args: argparse.Namespace, dataset: LeRobotDataset) -> Sys
 
 def episode_task_descriptions(dataset: LeRobotDataset) -> list[str]:
     task_descriptions = dataset.meta.tasks.index.tolist()
-    episodes_tasks: list[str] = []
-    for ep_idx in range(dataset.meta.total_episodes):
-        first_frame_idx = int(dataset.meta.episodes[ep_idx]["dataset_from_index"])
-        task_idx = int(dataset.hf_dataset[first_frame_idx]["task_index"])
-        episodes_tasks.append(task_descriptions[task_idx])
+    # When episodes are filtered, only iterate over the selected subset.
+    episode_indices = dataset.episodes if dataset.episodes is not None else list(range(dataset.meta.total_episodes))
+    # Filtered hf_dataset uses relative indexing; _absolute_to_relative_idx maps abs → rel.
+    abs_to_rel = getattr(dataset, "_absolute_to_relative_idx", None)
+    max_ep = max(episode_indices)
+    episodes_tasks: list[str] = [""] * (max_ep + 1)
+    for ep_idx in episode_indices:
+        first_abs = int(dataset.meta.episodes[ep_idx]["dataset_from_index"])
+        first_rel = abs_to_rel[first_abs] if abs_to_rel is not None else first_abs
+        task_idx = int(dataset.hf_dataset[first_rel]["task_index"])
+        episodes_tasks[ep_idx] = task_descriptions[task_idx]
     return episodes_tasks
 
 

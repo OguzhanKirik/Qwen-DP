@@ -6,9 +6,9 @@
 #SBATCH --nodes=1
 #SBATCH --mem=64G
 #SBATCH --time=8:00:00
-#SBATCH --job-name=eval-a0-v3
-#SBATCH --output=slurm_eval/logs/eval_a0_v3_%j.out
-#SBATCH --error=slurm_eval/logs/eval_a0_v3_%j.err
+#SBATCH --job-name=eval-a0-v3-ovs
+#SBATCH --output=slurm_eval/logs/eval_a0_v3_openvla_sticky_%j.out
+#SBATCH --error=slurm_eval/logs/eval_a0_v3_openvla_sticky_%j.err
 #SBATCH --exclude=gx13v1
 #SBATCH --cpus-per-task=4
 
@@ -20,7 +20,8 @@ conda activate ur5
 cd /sc/projects/sci-aisc/oguzhan.kirik/sereact_assignment
 
 mkdir -p slurm_eval/logs
-OUTPUT_DIR="slurm_eval/results_half/stage1_v3/a0"
+OUTPUT_DIR="slurm_eval/results_half/stage1_v3/a0_openvla_sticky"
+rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
 
 export PYTHONPATH="$PWD/qwen-dp:$PWD/lerobot/src:${PYTHONPATH:-}"
@@ -35,6 +36,7 @@ fi
 
 echo "========================================="
 echo "Evaluating Stage1 v3 A0 @ latest checkpoint"
+echo "Sticky gripper: fixed continuous OpenVLA hysteresis"
 echo "Checkpoint: $LATEST_CHECKPOINT"
 echo "Environment: LIBERO-10"
 echo "Episodes: 5 (with 5 videos)"
@@ -44,7 +46,7 @@ python qwen-dp/scripts/eval_stage1_a0.py \
     --checkpoint="$LATEST_CHECKPOINT" \
     --env_type=libero \
     --env_task=libero_10 \
-    --gripper-mode=openvla \
+    --gripper-mode=openvla_sticky \
     --n_episodes=5 \
     --batch_size=5 \
     --max_videos=5 \

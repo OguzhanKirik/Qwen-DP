@@ -6,9 +6,9 @@
 #SBATCH --nodes=1
 #SBATCH --mem=64G
 #SBATCH --time=8:00:00
-#SBATCH --job-name=eval-a0-v3
-#SBATCH --output=slurm_eval/logs/eval_a0_v3_%j.out
-#SBATCH --error=slurm_eval/logs/eval_a0_v3_%j.err
+#SBATCH --job-name=eval-a0-v3-openvla
+#SBATCH --output=slurm_eval/logs/eval_a0_v3_openvla_%j.out
+#SBATCH --error=slurm_eval/logs/eval_a0_v3_openvla_%j.err
 #SBATCH --exclude=gx13v1
 #SBATCH --cpus-per-task=4
 
@@ -20,7 +20,7 @@ conda activate ur5
 cd /sc/projects/sci-aisc/oguzhan.kirik/sereact_assignment
 
 mkdir -p slurm_eval/logs
-OUTPUT_DIR="slurm_eval/results_half/stage1_v3/a0"
+OUTPUT_DIR="slurm_eval/results_half/stage1_v3/a0_openvla"
 mkdir -p "$OUTPUT_DIR"
 
 export PYTHONPATH="$PWD/qwen-dp:$PWD/lerobot/src:${PYTHONPATH:-}"

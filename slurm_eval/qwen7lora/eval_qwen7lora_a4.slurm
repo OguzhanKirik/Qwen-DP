@@ -18,27 +18,50 @@ source /sc/home/oguzhan.kirik/conda3/etc/profile.d/conda.sh
 conda activate ur5
 cd /sc/projects/sci-aisc/oguzhan.kirik/sereact_assignment
 
-mkdir -p slurm_eval/results_qwenlora7/logs slurm_eval/results_qwenlora7/stage3_v4_async_k4/a4
+STAGE3_CHECKPOINT="${STAGE3_CHECKPOINT:-outputs_qwen7lora_v2/stage3_v4_async_k4_run3/checkpoint_088000}"
+DATASET_ROOT="${DATASET_ROOT:-datasets/lerobot_libero_10_subgoals}"
+CHECKPOINT_NAME="$(basename "$STAGE3_CHECKPOINT")"
+BASE_RESULT_DIR="slurm_eval/results_qwenlora7/stage3_v4_async_k4_run3/$CHECKPOINT_NAME/a4_sequential"
+TASK_IDS="${TASK_IDS:-0 1 2 3 4 5 6 7 8 9}"
+N_EPISODES="${N_EPISODES:-1}"
+BATCH_SIZE="${BATCH_SIZE:-1}"
+MAX_VIDEOS="${MAX_VIDEOS:-1}"
+
+mkdir -p slurm_eval/results_qwenlora7/logs "$BASE_RESULT_DIR"
 export PYTHONPATH="$PWD/qwen-dp-7:$PWD/lerobot/src:${PYTHONPATH:-}"
 export MUJOCO_GL=osmesa
 export PYOPENGL_PLATFORM=osmesa
+export LEROBOT_LIBERO_DISABLE_STICKY_GRIPPER=1
+export PYTHONUNBUFFERED=1
 
-python qwen-dp-7/scripts/eval_stage3_dual.py \
-    --variant=a4 \
-    --policy-checkpoint=outputs_qwen7lora_v2/stage3_v4_async_k4/final/policy \
-    --system2-checkpoint=outputs_qwen7lora_v2/stage3_v4_async_k4/final/system2 \
-    --model-path=models/Qwen2-VL-7B \
-    --system2-lora-r=8 \
-    --system2-lora-alpha=16 \
-    --system2-lora-dropout=0.05 \
-    --system2-lora-target-modules q_proj v_proj \
-    --update-interval=4 \
-    --gripper-mode=openvla \
-    --env_type=libero \
-    --env_task=libero_10 \
-    --n_episodes=5 \
-    --batch_size=5 \
-    --max_videos=5 \
-    --device=cuda \
-    --output_dir=slurm_eval/results_qwenlora7/stage3_v4_async_k4/a4 \
-    --seed=1000
+for TASK_ID in $TASK_IDS; do
+    RESULT_DIR="$BASE_RESULT_DIR/task_${TASK_ID}"
+    mkdir -p "$RESULT_DIR"
+    echo "============================================================"
+    echo "Running A4 task_id=$TASK_ID | episodes=$N_EPISODES | batch_size=$BATCH_SIZE"
+    echo "Output: $RESULT_DIR"
+    echo "============================================================"
+
+    python -u qwen-dp-7/scripts/eval_stage3_dual.py \
+        --variant=a4 \
+        --policy-checkpoint="$STAGE3_CHECKPOINT/policy" \
+        --system2-checkpoint="$STAGE3_CHECKPOINT/system2" \
+        --dataset-root="$DATASET_ROOT" \
+        --model-path=models/Qwen2-VL-7B \
+        --system2-lora-r=8 \
+        --system2-lora-alpha=16 \
+        --system2-lora-dropout=0.05 \
+        --system2-lora-target-modules q_proj v_proj \
+        --update-interval=4 \
+        --gripper-mode=native \
+        --env_type=libero \
+        --env_task=libero_10 \
+        --task-ids "$TASK_ID" \
+        --n_episodes="$N_EPISODES" \
+        --batch_size="$BATCH_SIZE" \
+        --max_videos="$MAX_VIDEOS" \
+        --device=cuda \
+        --output_dir="$RESULT_DIR" \
+        --seed=1000
+
+done

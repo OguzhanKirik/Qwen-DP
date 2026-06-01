@@ -156,13 +156,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--env_task", type=str, default="libero_10")
     parser.add_argument(
         "--gripper-mode",
-        choices=("openvla", "lerobot"),
+        choices=("openvla", "openvla_sticky", "lerobot", "native"),
         default="openvla",
         help=(
             "LIBERO gripper convention adapter. The downloaded lerobot/libero_10 "
             "actions use -1 for open/no-clamp and +1 for close/clamp, which matches "
             "the wrapper's openvla conversion path."
         ),
+    )
+    parser.add_argument(
+        "--dataset-root",
+        type=Path,
+        default=ROOT / "datasets" / "lerobot_libero_10_subgoals",
+        help="Training dataset root used for consistency with corrected-task-id evals.",
+    )
+    parser.add_argument(
+        "--task-ids",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Optional LIBERO eval task_id list to run.",
     )
     parser.add_argument("--n_episodes", type=int, default=50)
     parser.add_argument("--batch_size", type=int, default=5)
@@ -188,6 +201,8 @@ def main() -> None:
     print(f"Update interval: {args.update_interval}")
     print(f"Recovery threshold: {args.recovery_threshold}")
     print(f"Gripper mode: {args.gripper_mode}")
+    print(f"Dataset root: {args.dataset_root}")
+    print(f"Task IDs: {args.task_ids if args.task_ids is not None else 'all'}")
     print(f"Output: {output_dir}")
 
     policy = DualSystemEvalPolicy(args.policy_checkpoint, args.system2_checkpoint, args)
@@ -204,7 +219,13 @@ def main() -> None:
         control_mode: str = "relative"
         gripper_mode: str = args.gripper_mode
         episode_length: int | None = None
-        gym_kwargs: dict = field(default_factory=lambda: {"render_mode": "rgb_array", "obs_type": "pixels_agent_pos"})
+        gym_kwargs: dict = field(
+            default_factory=lambda: {
+                "render_mode": "rgb_array",
+                "obs_type": "pixels_agent_pos",
+                **({"task_ids": args.task_ids} if args.task_ids is not None else {}),
+            }
+        )
 
     cfg = type(
         "obj",

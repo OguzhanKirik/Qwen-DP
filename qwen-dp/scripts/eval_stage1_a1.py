@@ -150,7 +150,7 @@ def main():
     parser_args.add_argument("--checkpoint", type=str, required=True)
     parser_args.add_argument("--env_type", type=str, default="libero")
     parser_args.add_argument("--env_task", type=str, default="libero_10")
-    parser_args.add_argument("--gripper-mode", choices=("openvla", "lerobot"), default="lerobot")
+    parser_args.add_argument("--gripper-mode", choices=("openvla", "lerobot", "native"), default="openvla")
     parser_args.add_argument("--n_episodes", type=int, default=50)
     parser_args.add_argument("--batch_size", type=int, default=10)
     parser_args.add_argument("--max_videos", type=int, default=10)

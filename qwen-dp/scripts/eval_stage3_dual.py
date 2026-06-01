@@ -280,7 +280,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--env_task", type=str, default="libero_10")
     parser.add_argument(
         "--gripper-mode",
-        choices=("openvla", "lerobot"),
+        choices=("openvla", "openvla_sticky", "lerobot"),
         default="openvla",
         help=(
             "LIBERO gripper convention adapter. The downloaded lerobot/libero_10 "

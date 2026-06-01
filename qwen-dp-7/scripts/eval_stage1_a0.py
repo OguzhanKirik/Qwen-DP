@@ -25,6 +25,7 @@ sys.path.insert(0, str(ROOT / "lerobot" / "src"))
 
 import argparse
 import json
+import pandas as pd
 from lerobot.configs.eval import EvalConfig
 from lerobot.envs.factory import make_env, make_env_pre_post_processors
 from lerobot.policies.factory import make_pre_post_processors
@@ -95,10 +96,34 @@ class System1ActorTaskEmbedCondition(System1Actor):
         return super().select_action(batch, noise=noise)
 
 
+def build_eval_to_train_task_id_map(dataset_root: Path, suite_name: str) -> dict[int, int]:
+    """Map LIBERO eval task ids to the dataset task_index used during training."""
+    from libero.libero import benchmark
+
+    tasks_path = dataset_root / "meta" / "tasks.parquet"
+    train_tasks = pd.read_parquet(tasks_path)
+    train_task_by_language = {
+        str(language): int(row.task_index)
+        for language, row in train_tasks.iterrows()
+    }
+
+    bench = benchmark.get_benchmark_dict()[suite_name]()
+    eval_to_train: dict[int, int] = {}
+    for eval_task_id in range(len(bench.tasks)):
+        language = bench.get_task(eval_task_id).language
+        if language not in train_task_by_language:
+            raise ValueError(
+                f"LIBERO eval task is missing from training dataset tasks: {language!r}"
+            )
+        eval_to_train[eval_task_id] = train_task_by_language[language]
+    return eval_to_train
+
+
 def eval_all_tasks_with_task_id(
     envs: dict,
     policy: System1ActorTaskEmbedCondition,
     *,
+    task_id_map: dict[str, dict[int, int]],
     env_preprocessor,
     env_postprocessor,
     preprocessor,
@@ -133,9 +158,11 @@ def eval_all_tasks_with_task_id(
     )
 
     for task_group, task_id, env in tasks:
+        train_task_id = task_id_map.get(task_group, {}).get(task_id, task_id)
         print(f"  → task_group={task_group}  task_id={task_id}  "
+              f"train_task_id={train_task_id}  "
               f"embed={'learned' if policy._task_embed is not None else 'zeros'}")
-        policy.set_task_id(task_id)
+        policy.set_task_id(train_task_id)
         tg, tid, metrics = runner(task_group, task_id, env)
 
         for key in ("sum_rewards", "max_rewards", "successes"):
@@ -144,7 +171,12 @@ def eval_all_tasks_with_task_id(
             group_acc[tg][key].extend(lst)
             overall[key].extend(lst)
 
-        per_task_infos.append({"task_group": tg, "task_id": tid, "metrics": metrics})
+        per_task_infos.append({
+            "task_group": tg,
+            "task_id": tid,
+            "train_task_id": train_task_id,
+            "metrics": metrics,
+        })
 
     eval_s = time.time() - t0
     n_eps = len(overall["successes"])
@@ -181,10 +213,17 @@ def main():
     parser_args.add_argument("--task-embed-path", type=str, default=None,
                              help="Path to task_embed.pt. Auto-detected from checkpoint "
                                   "dir if omitted.")
+    parser_args.add_argument("--dataset-root", type=Path,
+                             default=ROOT / "datasets" / "lerobot_libero_10_subgoals",
+                             help="Training dataset root used to map LIBERO eval task_id "
+                                  "to the learned task embedding task_index.")
     parser_args.add_argument("--env_type", type=str, default="libero")
     parser_args.add_argument("--env_task", type=str, default="libero_10")
-    parser_args.add_argument("--gripper-mode", choices=("openvla", "lerobot"),
-                             default="lerobot")
+    parser_args.add_argument("--task-ids", type=int, nargs="+", default=None,
+                             help="Optional LIBERO eval task_id list to run. "
+                                  "Useful for direct interactive runs with limited RAM.")
+    parser_args.add_argument("--gripper-mode", choices=("openvla", "openvla_sticky", "lerobot", "native"),
+                             default="openvla")
     parser_args.add_argument("--n_episodes", type=int, default=50)
     parser_args.add_argument("--batch_size", type=int, default=10)
     parser_args.add_argument("--max_videos", type=int, default=10)
@@ -211,7 +250,9 @@ def main():
     print("=" * 60)
     print(f"Checkpoint:     {args.checkpoint}")
     print(f"Task embed:     {task_embed_path if task_embed_path.exists() else 'not found (zeros)'}")
+    print(f"Dataset root:   {args.dataset_root}")
     print(f"Environment:    {args.env_type}/{args.env_task}")
+    print(f"Task IDs:       {args.task_ids if args.task_ids is not None else 'all'}")
     print(f"Episodes:       {args.n_episodes}")
     print(f"Batch size:     {args.batch_size}")
     print(f"Gripper mode:   {args.gripper_mode}")
@@ -240,8 +281,11 @@ def main():
         gripper_mode: str = args.gripper_mode
         episode_length: int | None = None
         gym_kwargs: dict = field(
-            default_factory=lambda: {"render_mode": "rgb_array",
-                                     "obs_type": "pixels_agent_pos"}
+            default_factory=lambda: {
+                "render_mode": "rgb_array",
+                "obs_type": "pixels_agent_pos",
+                **({"task_ids": args.task_ids} if args.task_ids is not None else {}),
+            }
         )
 
     cfg = type("obj", (object,), {
@@ -259,6 +303,16 @@ def main():
 
     _align_libero_eval_config(cfg)
 
+    suite_names = [s.strip() for s in args.env_task.split(",") if s.strip()]
+    task_id_map = {
+        suite_name: build_eval_to_train_task_id_map(args.dataset_root, suite_name)
+        for suite_name in suite_names
+    }
+    print("\nEval task_id -> training task_index mapping:")
+    for suite_name, mapping in task_id_map.items():
+        for eval_task_id, train_task_id in mapping.items():
+            print(f"  {suite_name}:{eval_task_id} -> embed[{train_task_id}]")
+
     print(f"\nInitialising {args.env_task} environments...")
     envs = make_env(cfg.env, n_envs=args.batch_size)
 
@@ -275,6 +329,7 @@ def main():
     eval_results = eval_all_tasks_with_task_id(
         envs=envs,
         policy=policy,
+        task_id_map=task_id_map,
         env_preprocessor=env_preprocessor,
         env_postprocessor=env_postprocessor,
         preprocessor=preprocessor,

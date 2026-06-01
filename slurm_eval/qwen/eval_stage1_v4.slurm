@@ -19,34 +19,44 @@ conda activate ur5
 
 cd /sc/projects/sci-aisc/oguzhan.kirik/sereact_assignment
 
+CHECKPOINT="outputs/stage1_v4/stage1/checkpoint_565000"
+DATASET_ROOT="datasets/lerobot_libero_10_subgoals"
+OUTPUT_DIR="slurm_eval/results/stage1/a0_v4_565k_native_corrected_taskids"
+
 mkdir -p slurm_eval/logs
-mkdir -p slurm_eval/results/stage1/a0_v4
+mkdir -p "$OUTPUT_DIR"
 
 export PYTHONPATH="$PWD/qwen-dp:$PWD/lerobot/src:${PYTHONPATH:-}"
 export MUJOCO_GL=osmesa
 export PYOPENGL_PLATFORM=osmesa
+export LEROBOT_LIBERO_DISABLE_STICKY_GRIPPER=1
+export PYTHONUNBUFFERED=1
 
 echo "========================================="
-echo "Evaluating Stage1 v4 A0 @ 200k steps"
-echo "Checkpoint: outputs/stage1_v4/stage1/checkpoint_200000"
+echo "Evaluating Stage1 v4 A0 @ 565k steps with corrected task IDs"
+echo "Checkpoint: $CHECKPOINT"
+echo "Dataset root: $DATASET_ROOT"
 echo "Environment: LIBERO-10"
 echo "Episodes: 5 (with 5 videos)"
+echo "Output: $OUTPUT_DIR"
 echo "========================================="
 
-python qwen-dp/scripts/eval_stage1_a0.py \
-    --checkpoint=outputs/stage1_v4/stage1/checkpoint_200000 \
+python -u qwen-dp/scripts/eval_stage1_a0.py \
+    --checkpoint="$CHECKPOINT" \
+    --dataset-root="$DATASET_ROOT" \
     --env_type=libero \
     --env_task=libero_10 \
     --n_episodes=5 \
     --batch_size=5 \
     --max_videos=5 \
     --device=cuda \
-    --output_dir=slurm_eval/results/stage1/a0_v4 \
+    --gripper-mode=native \
+    --output_dir="$OUTPUT_DIR" \
     --seed=1000
 
 echo ""
 echo "========================================="
 echo "Evaluation complete!"
-echo "Results saved to: slurm_eval/results/stage1/a0_v4"
-echo "Videos saved to: slurm_eval/results/stage1/a0_v4/rollout_videos"
+echo "Results saved to: $OUTPUT_DIR"
+echo "Videos saved to: $OUTPUT_DIR/rollout_videos"
 echo "========================================="

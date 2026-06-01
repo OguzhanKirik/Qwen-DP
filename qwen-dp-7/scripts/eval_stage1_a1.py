@@ -27,6 +27,7 @@ from torch import Tensor
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "qwen-dp-7"))
 sys.path.insert(0, str(ROOT / "lerobot" / "src"))
+sys.path.insert(0, str(ROOT / "qwen-dp-7" / "scripts"))
 
 import argparse
 import json
@@ -35,6 +36,7 @@ from lerobot.envs.factory import make_env, make_env_pre_post_processors
 from lerobot.policies.factory import make_pre_post_processors
 from lerobot.scripts.lerobot_eval import run_one, _align_libero_eval_config
 from qwen_dp import System1Actor, QWEN_DP_POLICY_CONDITION
+from eval_stage1_a0 import build_eval_to_train_task_id_map
 
 
 class System1ActorZeroCondition(System1Actor):
@@ -77,6 +79,7 @@ def eval_all_tasks(
     envs: dict,
     policy,
     *,
+    task_id_map: dict[str, dict[int, int]],
     env_preprocessor,
     env_postprocessor,
     preprocessor,
@@ -109,9 +112,13 @@ def eval_all_tasks(
     )
 
     for task_group, task_id, env in tasks:
-        print(f"  → task_group={task_group}  task_id={task_id}  cond=zeros")
+        train_task_id = task_id_map.get(task_group, {}).get(task_id, task_id)
+        print(
+            f"  → task_group={task_group}  task_id={task_id}  "
+            f"train_task_id={train_task_id}  cond=zeros"
+        )
         if hasattr(policy, "set_task_id"):
-            policy.set_task_id(task_id)
+            policy.set_task_id(train_task_id)
         tg, tid, metrics = runner(task_group, task_id, env)
 
         for key in ("sum_rewards", "max_rewards", "successes"):
@@ -120,7 +127,7 @@ def eval_all_tasks(
             group_acc[tg][key].extend(lst)
             overall[key].extend(lst)
 
-        per_task_infos.append({"task_group": tg, "task_id": tid, "metrics": metrics})
+        per_task_infos.append({"task_group": tg, "task_id": tid, "train_task_id": train_task_id, "metrics": metrics})
 
     eval_s = time.time() - t0
     n_eps = len(overall["successes"])
@@ -148,9 +155,22 @@ def eval_all_tasks(
 def main():
     parser_args = argparse.ArgumentParser(description="Evaluate Stage 1 A1 — zero conditioning")
     parser_args.add_argument("--checkpoint", type=str, required=True)
+    parser_args.add_argument(
+        "--dataset-root",
+        type=Path,
+        default=ROOT / "datasets" / "lerobot_libero_10_subgoals",
+        help="Training dataset root used to map LIBERO eval task_id to training task_index.",
+    )
     parser_args.add_argument("--env_type", type=str, default="libero")
     parser_args.add_argument("--env_task", type=str, default="libero_10")
-    parser_args.add_argument("--gripper-mode", choices=("openvla", "lerobot"), default="lerobot")
+    parser_args.add_argument(
+        "--task-ids",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Optional LIBERO eval task_id list to run.",
+    )
+    parser_args.add_argument("--gripper-mode", choices=("openvla", "openvla_sticky", "lerobot", "native"), default="openvla")
     parser_args.add_argument("--n_episodes", type=int, default=50)
     parser_args.add_argument("--batch_size", type=int, default=10)
     parser_args.add_argument("--max_videos", type=int, default=10)
@@ -169,7 +189,9 @@ def main():
     print("=" * 60)
     print(f"Checkpoint:   {args.checkpoint}")
     print(f"Conditioning: zeros (policy was trained with task embeddings)")
+    print(f"Dataset root: {args.dataset_root}")
     print(f"Environment:  {args.env_type}/{args.env_task}")
+    print(f"Task IDs:     {args.task_ids if args.task_ids is not None else 'all'}")
     print(f"Episodes:     {args.n_episodes}")
     print(f"Output:       {output_dir}")
     print("=" * 60)
@@ -192,7 +214,8 @@ def main():
         episode_length: int | None = None
         gym_kwargs: dict = field(
             default_factory=lambda: {"render_mode": "rgb_array",
-                                     "obs_type": "pixels_agent_pos"}
+                                     "obs_type": "pixels_agent_pos",
+                                     **({"task_ids": args.task_ids} if args.task_ids is not None else {})}
         )
 
     cfg = type("obj", (object,), {
@@ -210,6 +233,16 @@ def main():
 
     _align_libero_eval_config(cfg)
 
+    suite_names = [s.strip() for s in args.env_task.split(",") if s.strip()]
+    task_id_map = {
+        suite_name: build_eval_to_train_task_id_map(args.dataset_root, suite_name)
+        for suite_name in suite_names
+    }
+    print("\nEval task_id -> training task_index mapping:")
+    for suite_name, mapping in task_id_map.items():
+        for eval_task_id, train_task_id in mapping.items():
+            print(f"  {suite_name}:{eval_task_id} -> train_task_id[{train_task_id}]")
+
     print(f"\nInitialising {args.env_task} environments...")
     envs = make_env(cfg.env, n_envs=args.batch_size)
     env_preprocessor, env_postprocessor = make_env_pre_post_processors(cfg.env, policy.config)
@@ -222,6 +255,7 @@ def main():
     eval_results = eval_all_tasks(
         envs=envs,
         policy=policy,
+        task_id_map=task_id_map,
         env_preprocessor=env_preprocessor,
         env_postprocessor=env_postprocessor,
         preprocessor=preprocessor,
